@@ -8,7 +8,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 load_dotenv()
 # === CONFIGURATION ===
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # UGMSA/FGMSA document links
@@ -21,8 +21,9 @@ UGMSA_DOC_IDS = [
 # Main bot link
 MAIN_BOT_LINK = "https://t.me/UGMSA_bot"
 
-if TELEGRAM_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN" or OPENAI_API_KEY == "YOUR_OPENAI_API_KEY":
-    raise ValueError("Please set TELEGRAM_BOT_TOKEN and OPENAI_API_KEY environment variables")
+if not TELEGRAM_TOKEN or not OPENAI_API_KEY:
+    raise ValueError("Please set TELEGRAM_TOKEN and OPENAI_API_KEY in your environment variables")
+
 
 # === INITIALIZE OPENAI ===
 client = OpenAI(api_key=OPENAI_API_KEY)
