@@ -323,31 +323,34 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # === MAIN ===
-def main():
+import asyncio  # <-- added
+
+async def main():
     """Initialize and run the bot"""
     try:
         # Load knowledge base at startup
         load_knowledge_base()
-        
+
         # Build application
         app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-        
+
         # Register handlers
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("menu", menu))
         app.add_handler(CallbackQueryHandler(button_callback))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-        
-        # Start polling
-        print("🤖 UGMSA AI Bot is running...")
-        print("📱 Press Ctrl+C to stop\n")
-        app.run_polling(allowed_updates=Update.ALL_TYPES)
-        
-    except KeyboardInterrupt:
-        print("\n👋 Bot stopped gracefully")
+
+        # Start polling (this keeps the bot alive)
+        print("🤖 UGMSA AI Bot is running in background mode...")
+        await app.run_polling(allowed_updates=Update.ALL_TYPES)
+
     except Exception as e:
         print(f"❌ Fatal error: {e}")
         raise
 
+
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())   # <-- replaced your old `main()` call
+    except (KeyboardInterrupt, SystemExit):
+        print("👋 Bot stopped gracefully.")
