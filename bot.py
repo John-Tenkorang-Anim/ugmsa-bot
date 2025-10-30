@@ -62,19 +62,19 @@ def load_all_documents():
         if doc_id.startswith("YOUR_DOCUMENT_ID"):
             continue
         
-        print(f"📄 Fetching document {doc_id}...")
+        print(f"Fetching document {doc_id}...")
         content = fetch_google_doc_content(doc_id)
         
         if content:
             all_content.append(content)
-            print(f"✅ Loaded document ({len(content)} characters)")
+            print(f" Loaded document ({len(content)} characters)")
     
     if all_content:
         document_content_cache = "\n\n--- DOCUMENT SEPARATOR ---\n\n".join(all_content)
-        print(f"✅ Total documents loaded: {len(all_content)}")
+        print(f" Total documents loaded: {len(all_content)}")
         return document_content_cache
     else:
-        print("⚠️ No documents loaded. Bot will work without document context.")
+        print("No documents loaded. Bot will work without document context.")
         return None
 
 # === HELPER FUNCTIONS ===
