@@ -323,34 +323,32 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # === MAIN ===
-import asyncio  # <-- added
+import asyncio
 
 async def main():
-    """Initialize and run the bot"""
-    try:
-        # Load knowledge base at startup
-        load_knowledge_base()
+    """Run the bot safely inside Render background worker"""
+    print("📚 Loading UGMSA knowledge base...")
+    load_knowledge_base()
 
-        # Build application
-        app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-        # Register handlers
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("menu", menu))
-        app.add_handler(CallbackQueryHandler(button_callback))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
+    # Register handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("menu", menu))
+    app.add_handler(CallbackQueryHandler(button_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
-        # Start polling (this keeps the bot alive)
-        print("🤖 UGMSA AI Bot is running in background mode...")
-        await app.run_polling(allowed_updates=Update.ALL_TYPES)
+    print("🤖 UGMSA AI Bot is running in background mode...")
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
 
-    except Exception as e:
-        print(f"❌ Fatal error: {e}")
-        raise
+    # Keep running until Render restarts the worker
+    await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())   # <-- replaced your old `main()` call
+        asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        print("👋 Bot stopped gracefully.")
+        print("🛑 Bot stopped gracefully.")
