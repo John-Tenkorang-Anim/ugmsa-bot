@@ -339,12 +339,8 @@ async def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
     print("🤖 UGMSA AI Bot is running in background mode...")
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+    await app.run_polling(allowed_updates=Update.ALL_TYPES)
 
-    # Keep running until Render restarts the worker
-    await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
