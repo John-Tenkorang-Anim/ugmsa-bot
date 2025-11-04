@@ -1,6 +1,11 @@
 import os
 import re
 import requests
+import logging
+import signal
+import sys
+from threading import Thread
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from bs4 import BeautifulSoup
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
@@ -10,9 +15,20 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# === LOGGING CONFIGURATION ===
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
 # === CONFIGURATION ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+PORT = int(os.getenv("PORT", "8080"))  # For health check endpoint
 
 # Document IDs from Google Drive
 UGMSA_DOC_IDS = ["1vyX3bAFBgX8QuaCCsNHdyltyLMZCzB6BtnELtmjlcd0"]
@@ -24,12 +40,44 @@ UGMSA_WEBSITE_URL = "https://ugmsa.org/"
 MAIN_BOT_LINK = "https://t.me/UGMSA_bot"
 
 if not TELEGRAM_TOKEN or not OPENAI_API_KEY:
+    logger.error("Missing required environment variables: TELEGRAM_TOKEN and/or OPENAI_API_KEY")
     raise ValueError("Missing environment variables: TELEGRAM_TOKEN and/or OPENAI_API_KEY")
 
 # === INITIALIZE ===
 client = OpenAI(api_key=OPENAI_API_KEY)
 user_conversations = {}
 knowledge_base_cache = None
+health_server = None
+bot_running = True
+
+# === HEALTH CHECK SERVER ===
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    """Simple HTTP server for health checks"""
+
+    def do_GET(self):
+        """Handle GET requests"""
+        if self.path in ['/', '/health', '/healthz']:
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'OK')
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        """Suppress health check logs"""
+        pass
+
+def start_health_server():
+    """Start health check server in background thread"""
+    global health_server
+    try:
+        health_server = HTTPServer(('0.0.0.0', PORT), HealthCheckHandler)
+        logger.info(f"Health check server started on port {PORT}")
+        health_server.serve_forever()
+    except Exception as e:
+        logger.error(f"Failed to start health check server: {e}")
 
 # === KNOWLEDGE BASE LOADING ===
 def fetch_google_doc(doc_id):
@@ -38,10 +86,10 @@ def fetch_google_doc(doc_id):
         url = f"https://docs.google.com/document/d/{doc_id}/export?format=txt"
         response = requests.get(url, timeout=10)
         if response.status_code == 200:
-            print(f"✅ Loaded Google Doc ({len(response.text)} chars)")
+            logger.info(f"✅ Loaded Google Doc ({len(response.text)} chars)")
             return response.text
     except Exception as e:
-        print(f"⚠️ Error fetching doc {doc_id}: {e}")
+        logger.warning(f"⚠️ Error fetching doc {doc_id}: {e}")
     return None
 
 def fetch_website_content(url):
@@ -51,49 +99,49 @@ def fetch_website_content(url):
         response = requests.get(url, headers=headers, timeout=10)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
-            
+
             # Remove script and style elements
             for script in soup(["script", "style", "nav", "footer"]):
                 script.decompose()
-            
+
             # Get text content
             text = soup.get_text(separator='\n', strip=True)
             # Clean up extra whitespace
             text = '\n'.join(line.strip() for line in text.splitlines() if line.strip())
-            
-            print(f"✅ Loaded website content ({len(text)} chars)")
+
+            logger.info(f"✅ Loaded website content ({len(text)} chars)")
             return text
     except Exception as e:
-        print(f"⚠️ Error fetching website: {e}")
+        logger.warning(f"⚠️ Error fetching website: {e}")
     return None
 
 def load_knowledge_base():
     """Load all knowledge sources (documents + website)"""
     global knowledge_base_cache
-    
+
     if knowledge_base_cache:
         return knowledge_base_cache
-    
-    print("📚 Loading UGMSA knowledge base...")
+
+    logger.info("📚 Loading UGMSA knowledge base...")
     sources = []
-    
+
     # Load Google Docs
     for doc_id in UGMSA_DOC_IDS:
         content = fetch_google_doc(doc_id)
         if content:
             sources.append(f"=== OFFICIAL DOCUMENT ===\n{content}")
-    
+
     # Load Website
     website_content = fetch_website_content(UGMSA_WEBSITE_URL)
     if website_content:
         sources.append(f"=== UGMSA WEBSITE (ugmsa.org) ===\n{website_content}")
-    
+
     if sources:
         knowledge_base_cache = "\n\n".join(sources)
-        print(f"✅ Knowledge base ready ({len(knowledge_base_cache)} total chars)")
+        logger.info(f"✅ Knowledge base ready ({len(knowledge_base_cache)} total chars)")
         return knowledge_base_cache
-    
-    print("⚠️ No knowledge sources loaded")
+
+    logger.warning("⚠️ No knowledge sources loaded")
     return None
 
 # === TEXT FORMATTING ===
@@ -313,7 +361,7 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_formatted_message(update, context, reply, get_back_keyboard())
         
     except Exception as e:
-        print(f"❌ Error in chat handler: {e}")
+        logger.error(f"❌ Error in chat handler: {e}", exc_info=True)
         await send_formatted_message(
             update, context,
             "⚠️ <b>Oops! Something went wrong</b>\n\n"
@@ -325,26 +373,83 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === MAIN ===
 import asyncio
 
+# Global variable to hold the application
+app = None
+
+def signal_handler(sig, _frame):
+    """Handle shutdown signals gracefully"""
+    global bot_running, health_server
+    logger.info(f"🛑 Received signal {sig}, shutting down gracefully...")
+    bot_running = False
+
+    if health_server:
+        try:
+            health_server.shutdown()
+        except Exception:
+            pass
+
 async def main():
     """Run the bot safely inside Render background worker"""
-    print("📚 Loading UGMSA knowledge base...")
-    load_knowledge_base()
+    global app, bot_running
 
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    try:
+        # Start health check server in background
+        health_thread = Thread(target=start_health_server, daemon=True)
+        health_thread.start()
+        logger.info("🏥 Health check endpoint ready")
 
-    # Register handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("menu", menu))
-    app.add_handler(CallbackQueryHandler(button_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
+        # Load knowledge base
+        logger.info("📚 Loading UGMSA knowledge base...")
+        load_knowledge_base()
 
-    print("🤖 UGMSA AI Bot is running in background mode...")
-    await app.run_polling(allowed_updates=Update.ALL_TYPES)
+        # Build application
+        app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
+        # Register handlers
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("menu", menu))
+        app.add_handler(CallbackQueryHandler(button_callback))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
+
+        logger.info("🤖 UGMSA AI Bot is starting...")
+
+        # Initialize and start bot
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
+
+        logger.info("✅ Bot is now running and accepting messages!")
+
+        # Keep running until shutdown signal
+        while bot_running:
+            await asyncio.sleep(1)
+
+        # Graceful shutdown
+        logger.info("🔄 Stopping bot gracefully...")
+        await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
+        logger.info("✅ Bot stopped successfully")
+
+    except Exception as e:
+        logger.error(f"❌ Fatal error in main: {e}", exc_info=True)
+        raise
 
 
 if __name__ == "__main__":
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
     try:
+        logger.info("🚀 Starting UGMSA AI Bot...")
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        print("🛑 Bot stopped gracefully.")
+        logger.info("🛑 Bot stopped by user")
+    except Exception as e:
+        logger.error(f"❌ Unexpected error: {e}", exc_info=True)
+        sys.exit(1)
+
